@@ -1,0 +1,58 @@
+name: Build & Deploy API
+
+on:
+  push:
+    branches: [develop, main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/api
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "ENV=prd" >> $GITHUB_OUTPUT
+            echo "TAG=prd-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          else
+            echo "ENV=dev" >> $GITHUB_OUTPUT
+            echo "TAG=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.env.outputs.TAG }}
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /opt/fit/${{ steps.env.outputs.ENV }}
+            export API_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.env.outputs.TAG }}
+            docker compose pull api
+            docker compose up -d --no-deps api
